@@ -33,14 +33,16 @@ class Llama4Router(nn.Module):
 
 
 class Llama4MegaBlocksAdapter(nn.Module):
-    def __init__(self, config: Llama4TextConfig, module: Llama4TextMoe, ep_group: dist.ProcessGroup):
+    def __init__(self, config: Llama4TextConfig, ep_group: dist.ProcessGroup):
         super().__init__()
 
-        ep_rank = dist.get_rank(ep_group)
-        ep_size = dist.get_world_size(ep_group)
+        self.config = config
 
-        assert config.num_local_experts % ep_size == 0, "Number of experts must be divisible by the number of expert parallel groups"
-        num_experts_per_rank = config.num_local_experts // ep_size
+        self.ep_rank = dist.get_rank(ep_group)
+        self.ep_size = dist.get_world_size(ep_group)
+
+        assert config.num_local_experts % self.ep_size == 0, "Number of experts must be divisible by the number of expert parallel groups"
+        self.num_experts_per_rank = config.num_local_experts // self.ep_size
 
         args = Arguments(
             mlp_type="glu",
@@ -66,33 +68,33 @@ class Llama4MegaBlocksAdapter(nn.Module):
 
         self.moe.router = Llama4Router(args)
 
-        if module is not None:
-            with torch.no_grad():
-                self.moe.router.layer.weight.copy_(module.router.weight.clone().detach())
-                if module.router.bias is not None:
-                    self.moe.router.layer.bias.copy_(module.router.bias.clone().detach())
+    def copy_weights_from(self, module: Llama4TextMoe):
+        with torch.no_grad():
+            self.moe.router.layer.weight.copy_(module.router.weight.clone().detach())
+            if module.router.bias is not None:
+                self.moe.router.layer.bias.copy_(module.router.bias.clone().detach())
 
-                w1 = module.experts.gate_up_proj[ep_rank * num_experts_per_rank:(ep_rank + 1) * num_experts_per_rank,:,:config.intermediate_size].clone().detach()
-                w2 = module.experts.gate_up_proj[ep_rank * num_experts_per_rank:(ep_rank + 1) * num_experts_per_rank,:,config.intermediate_size:].clone().detach()
-                v1 = module.experts.down_proj[ep_rank * num_experts_per_rank:(ep_rank + 1) * num_experts_per_rank,:].clone().detach()
+            w1 = module.experts.gate_up_proj[self.ep_rank * self.num_experts_per_rank:(self.ep_rank + 1) * self.num_experts_per_rank,:,:self.config.intermediate_size].clone().detach()
+            w2 = module.experts.gate_up_proj[self.ep_rank * self.num_experts_per_rank:(self.ep_rank + 1) * self.num_experts_per_rank,:,self.config.intermediate_size:].clone().detach()
+            v1 = module.experts.down_proj[self.ep_rank * self.num_experts_per_rank:(self.ep_rank + 1) * self.num_experts_per_rank,:].clone().detach()
 
-                w1 = w1.transpose(2, 1).reshape(-1, config.hidden_size)
-                w2 = w2.transpose(2, 1).reshape(-1, config.hidden_size)
-                v1 = v1.transpose(2, 1).reshape(-1, config.hidden_size)
+            w1 = w1.transpose(2, 1).reshape(-1, self.config.hidden_size)
+            w2 = w2.transpose(2, 1).reshape(-1, self.config.hidden_size)
+            v1 = v1.transpose(2, 1).reshape(-1, self.config.hidden_size)
 
-                self.moe.experts.mlp.w1.copy_(w1)
-                self.moe.experts.mlp.w2.copy_(w2)
-                self.moe.experts.mlp.v1.copy_(v1)
+            self.moe.experts.mlp.w1.copy_(w1)
+            self.moe.experts.mlp.w2.copy_(w2)
+            self.moe.experts.mlp.v1.copy_(v1)
 
-                self.moe.shared_expert.gate_proj.weight.copy_(
-                    module.shared_expert.gate_proj.weight.clone().detach()
-                )
-                self.moe.shared_expert.up_proj.weight.copy_(
-                    module.shared_expert.up_proj.weight.clone().detach()
-                )
-                self.moe.shared_expert.down_proj.weight.copy_(
-                    module.shared_expert.down_proj.weight.clone().detach()
-                )
+            self.moe.shared_expert.gate_proj.weight.copy_(
+                module.shared_expert.gate_proj.weight.clone().detach()
+            )
+            self.moe.shared_expert.up_proj.weight.copy_(
+                module.shared_expert.up_proj.weight.clone().detach()
+            )
+            self.moe.shared_expert.down_proj.weight.copy_(
+                module.shared_expert.down_proj.weight.clone().detach()
+            )
 
 
     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

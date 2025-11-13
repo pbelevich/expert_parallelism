@@ -30,14 +30,14 @@ class MixtralRouter(nn.Module):
         return scores, expert_weights, expert_indices
 
 class MixtralMegaBlocksAdapter(nn.Module):
-    def __init__(self, config: MixtralConfig, module: MixtralSparseMoeBlock, ep_group: dist.ProcessGroup):
+    def __init__(self, config: MixtralConfig, ep_group: dist.ProcessGroup):
         super().__init__()
 
-        ep_rank = dist.get_rank(ep_group)
-        ep_size = dist.get_world_size(ep_group)
+        self.ep_rank = dist.get_rank(ep_group)
+        self.ep_size = dist.get_world_size(ep_group)
 
-        assert config.num_local_experts % ep_size == 0, "Number of experts must be divisible by the number of expert parallel groups"
-        num_experts_per_rank = config.num_local_experts // ep_size
+        assert config.num_local_experts % self.ep_size == 0, "Number of experts must be divisible by the number of expert parallel groups"
+        self.num_experts_per_rank = config.num_local_experts // self.ep_size
 
         args = Arguments(
             mlp_type="glu",
@@ -57,24 +57,24 @@ class MixtralMegaBlocksAdapter(nn.Module):
         )
 
         self.moe = dMoE(args)
-
         self.moe.router = MixtralRouter(args)
 
-        if module is not None:
-            with torch.no_grad():
-                self.moe.router.layer.weight.copy_(module.gate.weight.clone().detach())
-                if module.gate.bias is not None:
-                    self.moe.router.layer.bias.copy_(module.gate.bias.clone().detach())
 
-                w1, w2, v1 = [], [], []
-                for i in range(num_experts_per_rank):
-                    w1.append(module.experts[ep_rank * num_experts_per_rank + i].w1.weight.clone().detach())
-                    w2.append(module.experts[ep_rank * num_experts_per_rank + i].w2.weight.t().clone().detach())
-                    v1.append(module.experts[ep_rank * num_experts_per_rank + i].w3.weight.clone().detach())
+    def copy_weights_from(self, module: MixtralSparseMoeBlock):
+        with torch.no_grad():
+            self.moe.router.layer.weight.copy_(module.gate.weight.clone().detach())
+            if module.gate.bias is not None:
+                self.moe.router.layer.bias.copy_(module.gate.bias.clone().detach())
 
-                self.moe.experts.mlp.w1.copy_(torch.cat(w1, dim=0))
-                self.moe.experts.mlp.w2.copy_(torch.cat(w2, dim=0))
-                self.moe.experts.mlp.v1.copy_(torch.cat(v1, dim=0))
+            w1, w2, v1 = [], [], []
+            for i in range(self.num_experts_per_rank):
+                w1.append(module.experts[self.ep_rank * self.num_experts_per_rank + i].w1.weight.clone().detach())
+                w2.append(module.experts[self.ep_rank * self.num_experts_per_rank + i].w2.weight.t().clone().detach())
+                v1.append(module.experts[self.ep_rank * self.num_experts_per_rank + i].w3.weight.clone().detach())
+
+            self.moe.experts.mlp.w1.copy_(torch.cat(w1, dim=0))
+            self.moe.experts.mlp.w2.copy_(torch.cat(w2, dim=0))
+            self.moe.experts.mlp.v1.copy_(torch.cat(v1, dim=0))
 
 
     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -87,11 +87,3 @@ class MixtralMegaBlocksAdapter(nn.Module):
         # just return None here – training code will read them separately.
         router_logits = None
         return out, router_logits
-
-
-# class MixtralSparseMoeBlockEP(MixtralSparseMoeBlock):
-#     def __init__(self, config, module):
-#         super().__init__(config)
-
-#     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-#         return super().forward(hidden_states)

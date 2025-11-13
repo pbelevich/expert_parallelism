@@ -1,6 +1,6 @@
 import torch
 import torch.distributed as dist
-from transformers import AutoConfig, MixtralForCausalLM, GptOssForCausalLM, Qwen3MoeForCausalLM, Llama4ForCausalLM, DeepseekV3ForCausalLM
+from transformers import AutoConfig, MixtralForCausalLM, Qwen3MoeForCausalLM, Llama4ForCausalLM, DeepseekV3ForCausalLM
 from transformers.models.llama4.configuration_llama4 import Llama4Config
 from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
 
@@ -56,9 +56,7 @@ def assert_gradients_are_the_same(model, world_size, rank, except_patterns=[]):
             all_gradients = [torch.zeros_like(gradients) for _ in range(world_size)]
             dist.all_gather(all_gradients, gradients)
             for i in range(world_size):
-                torch.testing.assert_close(all_gradients[i], all_gradients[0]
-                # , msg=f"Rank {rank:02d}: Gradient mismatch for parameter {name}"
-                )
+                torch.testing.assert_close(all_gradients[i], all_gradients[0])
     print(f"Rank {rank:02d}: All gradients are the same")
 
 def apply_expert_parallelism(model, ep_group):
@@ -67,20 +65,15 @@ def apply_expert_parallelism(model, ep_group):
         for name, child in list(module.named_children()):
             replace_module(child, old_class, new_class_fn, config, device, ep_group)
             if isinstance(child, old_class):
-                setattr(module, name, new_class_fn(config, child, ep_group).to(device))
+                adapter = new_class_fn(config, ep_group)
+                adapter.copy_weights_from(child)
+                setattr(module, name, adapter.to(device))
         return module
 
     if isinstance(model, MixtralForCausalLM):
         from transformers.models.mixtral.modeling_mixtral import MixtralSparseMoeBlock
         from mixtral import MixtralMegaBlocksAdapter
         model = replace_module(model, MixtralSparseMoeBlock, MixtralMegaBlocksAdapter, model.config, model.device, ep_group)
-        model.grad_atol = 1e-2
-        model.grad_rtol = 1e-2
-        return model
-    elif isinstance(model, GptOssForCausalLM):
-        from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
-        from gptoss import GptOssMegaBlocksAdapter
-        model = replace_module(model, GptOssMLP, GptOssMegaBlocksAdapter, model.config, model.device, ep_group)
         model.grad_atol = 1e-2
         model.grad_rtol = 1e-2
         return model
