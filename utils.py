@@ -1,18 +1,23 @@
 import torch
 import torch.distributed as dist
-from transformers import AutoConfig, MixtralForCausalLM, GptOssForCausalLM, Qwen3MoeForCausalLM
+from transformers import AutoConfig, MixtralForCausalLM, GptOssForCausalLM, Qwen3MoeForCausalLM, Llama4ForCausalLM
+from transformers.models.llama4.configuration_llama4 import Llama4Config
 
 def create_config(model_name: str):
     config = AutoConfig.from_pretrained(model_name)
+    if isinstance(config, Llama4Config):
+        config = config.text_config
     config.num_hidden_layers = 1
-    config.hidden_size = 1024
-    config.intermediate_size = 4096
+    config.hidden_size = 128
+    config.intermediate_size = 512
     return config
 
 def sync_model_parameters(model):
+    print(f"Rank {dist.get_rank()}: Syncing model parameters")
     with torch.no_grad():
         for param in model.parameters():
             dist.broadcast(param, src=0)
+    print(f"Rank {dist.get_rank()}: Model parameters synced")
     return model
 
 def create_batch(config, batch_size=16, seq_len=16):
@@ -81,6 +86,13 @@ def apply_expert_parallelism(model, ep_group):
         model = replace_module(model, Qwen3MoeSparseMoeBlock, Qwen3MegaBlocksAdapter, model.config, model.device, ep_group)
         model.grad_atol = 0.2
         model.grad_rtol = 1e-2
+        return model
+    elif isinstance(model, Llama4ForCausalLM):
+        from transformers.models.llama4.modeling_llama4 import Llama4TextMoe
+        from llama4 import Llama4MegaBlocksAdapter
+        model = replace_module(model, Llama4TextMoe, Llama4MegaBlocksAdapter, model.config, model.device, ep_group)
+        model.grad_atol = 1e-1
+        model.grad_rtol = 1e-3
         return model
     else:
         raise ValueError(f"Unsupported model: {type(model)}")

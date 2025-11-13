@@ -12,6 +12,8 @@ Models:
         * https://huggingface.co/Qwen/Qwen3-235B-A22B-Instruct-2507/blob/main/config.json - 128 experts
 * Llama4
     * https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama4/modeling_llama4.py
+        * https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct/blob/main/config.json - 16 experts
+        * https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct/blob/main/config.json - 128 experts
 * DeepSeek
     * https://github.com/huggingface/transformers/blob/main/src/transformers/models/deepseek_v3/modeling_deepseek_v3.py
         * https://huggingface.co/deepseek-ai/DeepSeek-R1-0528/blob/main/config.json - 256 experts

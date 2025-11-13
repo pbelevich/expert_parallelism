@@ -45,6 +45,7 @@ SUPPORTED_MODELS = [
     "mistralai/Mixtral-8x7B-Instruct-v0.1",
     # "openai/gpt-oss-20b", Not yet because of biases
     "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "meta-llama/Llama-4-Scout-17B-16E-Instruct",
 ]
 
 def parse_args():
