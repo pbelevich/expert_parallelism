@@ -46,6 +46,7 @@ SUPPORTED_MODELS = [
     # "openai/gpt-oss-20b", Not yet because of biases
     "Qwen/Qwen3-30B-A3B-Instruct-2507",
     "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+    "deepseek-ai/DeepSeek-R1-0528",
 ]
 
 def parse_args():
