@@ -26,4 +26,4 @@ srun -l \
             --rdzv_id=$SLURM_JOB_ID \
             --rdzv_backend=c10d \
             --rdzv_endpoint=$(hostname) \
-            main.py --model-name meta-llama/Llama-4-Scout-17B-16E-Instruct
+            main.py --model-name meta-llama/Llama-4-Scout-17B-16E-Instruct --impl mega_blocks

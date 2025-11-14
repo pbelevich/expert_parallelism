@@ -104,12 +104,20 @@ def apply_expert_parallelism(model, ep_group, impl="mega_blocks"):
             return model
     elif isinstance(model, Llama4ForCausalLM):
         from transformers.models.llama4.modeling_llama4 import Llama4TextMoe
-        from llama4 import Llama4MegaBlocksAdapter
-        model = replace_module(model, Llama4TextMoe, Llama4MegaBlocksAdapter, model.config, model.device, model.dtype, ep_group)
-        model.grad_atol = 0.2
-        model.grad_rtol = 1e-3
-        model.except_patterns = ["moe.experts"]
-        return model
+        if impl == "mega_blocks":
+            from llama4 import Llama4MegaBlocksAdapter
+            model = replace_module(model, Llama4TextMoe, Llama4MegaBlocksAdapter, model.config, model.device, model.dtype, ep_group)
+            model.grad_atol = 0.2
+            model.grad_rtol = 1e-3
+            model.except_patterns = ["moe.experts"]
+            return model
+        elif impl == "my":
+            from llama4 import Llama4TextMoeEP
+            model = replace_module(model, Llama4TextMoe, Llama4TextMoeEP, model.config, model.device, model.dtype, ep_group)
+            model.grad_atol = 1e-6
+            model.grad_rtol = 1e-6
+            model.except_patterns = [".experts", ".router"]
+            return model
     elif isinstance(model, DeepseekV3ForCausalLM):
         from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3MoE
         from deepseek import DeepSeekMegaBlocksAdapter

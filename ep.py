@@ -77,7 +77,9 @@ def combine(final_hidden_states, hidden_states, selected_experts, routing_weight
 
             current_hidden_states = new_hidden_states_to_send[offset:offset + len(top_x)]
 
-            current_hidden_states = current_hidden_states * routing_weights[top_x, idx, None]
+            # Apply routing weights if provided (None means weights were already applied)
+            if routing_weights is not None:
+                current_hidden_states = current_hidden_states * routing_weights[top_x, idx, None]
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
 
             offset += len(top_x)
