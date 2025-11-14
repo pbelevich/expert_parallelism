@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ep
+#SBATCH --job-name=mixtral
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node 1
 ##SBATCH --output %x_%j.out
@@ -26,4 +26,4 @@ srun -l \
             --rdzv_id=$SLURM_JOB_ID \
             --rdzv_backend=c10d \
             --rdzv_endpoint=$(hostname) \
-            main.py --model-name mistralai/Mixtral-8x7B-Instruct-v0.1
+            main.py --model-name mistralai/Mixtral-8x7B-Instruct-v0.1 --impl mega_blocks

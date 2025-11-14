@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ep
+#SBATCH --job-name=deepseek
 #SBATCH --nodes=8
 #SBATCH --ntasks-per-node 1
 ##SBATCH --output %x_%j.out

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ep
+#SBATCH --job-name=llama4
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node 1
 ##SBATCH --output %x_%j.out
