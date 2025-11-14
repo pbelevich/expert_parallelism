@@ -84,16 +84,24 @@ def apply_expert_parallelism(model, ep_group, impl="mega_blocks"):
             model = replace_module(model, MixtralSparseMoeBlock, MixtralSparseMoeBlockEP, model.config, model.device, model.dtype, ep_group)
             model.grad_atol = 1e-6
             model.grad_rtol = 1e-6
-            model.except_patterns = ["moe.experts"]
+            model.except_patterns = [".experts"]
         return model
     elif isinstance(model, Qwen3MoeForCausalLM):
         from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeSparseMoeBlock
-        from qwen3 import Qwen3MegaBlocksAdapter
-        model = replace_module(model, Qwen3MoeSparseMoeBlock, Qwen3MegaBlocksAdapter, model.config, model.device, model.dtype, ep_group)
-        model.grad_atol = 0.2
-        model.grad_rtol = 1e-2
-        model.except_patterns = ["moe.experts"]
-        return model
+        if impl == "mega_blocks":
+            from qwen3 import Qwen3MegaBlocksAdapter
+            model = replace_module(model, Qwen3MoeSparseMoeBlock, Qwen3MegaBlocksAdapter, model.config, model.device, model.dtype, ep_group)
+            model.grad_atol = 0.2
+            model.grad_rtol = 1e-2
+            model.except_patterns = ["moe.experts"]
+            return model
+        elif impl == "my":
+            from qwen3 import Qwen3MoeSparseMoeBlockEP
+            model = replace_module(model, Qwen3MoeSparseMoeBlock, Qwen3MoeSparseMoeBlockEP, model.config, model.device, model.dtype, ep_group)
+            model.grad_atol = 1e-6
+            model.grad_rtol = 1e-6
+            model.except_patterns = [".experts"]
+            return model
     elif isinstance(model, Llama4ForCausalLM):
         from transformers.models.llama4.modeling_llama4 import Llama4TextMoe
         from llama4 import Llama4MegaBlocksAdapter

@@ -26,4 +26,4 @@ srun -l \
             --rdzv_id=$SLURM_JOB_ID \
             --rdzv_backend=c10d \
             --rdzv_endpoint=$(hostname) \
-            main.py --model-name Qwen/Qwen3-30B-A3B-Instruct-2507
+            main.py --model-name Qwen/Qwen3-30B-A3B-Instruct-2507 --impl mega_blocks

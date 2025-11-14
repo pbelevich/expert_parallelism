@@ -110,15 +110,20 @@ class MixtralSparseMoeBlockEP(nn.Module):
         self.num_experts = config.num_local_experts
         self.top_k = config.num_experts_per_tok
 
-        # gating
-        self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
-
         self.ep_group = ep_group
         self.ep_rank = dist.get_rank(self.ep_group)
         self.ep_size = dist.get_world_size(self.ep_group)
         assert config.num_local_experts % self.ep_size == 0, "Number of experts must be divisible by the number of expert parallel groups"
         self.num_experts_per_rank = config.num_local_experts // self.ep_size
 
+        # gating
+        self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
+        def all_reduce_gate_grad(grad, group=self.ep_group):
+            if grad is not None:
+                dist.all_reduce(grad, group=group)
+            return grad
+        self.gate.weight.register_hook(all_reduce_gate_grad)
+        
         self.experts = nn.ModuleList([MixtralBlockSparseTop2MLP(config) for _ in range(self.num_experts_per_rank)])
 
         # Jitter parameters
