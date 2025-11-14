@@ -18,8 +18,15 @@ MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 MASTER_PORT=29500
 SLURM_GPUS_PER_NODE=8
 
+# Parse optional --container argument
+CONTAINER_ARGS=""
+if [[ "$*" == *"--container"* ]]; then
+    CONTAINER_ARGS="--container-image=./ep.sqsh"
+fi
+
 srun \
     --mpi=pmix --cpu-bind=none \
+    $CONTAINER_ARGS \
         torchrun \
             --nnodes=$SLURM_JOB_NUM_NODES \
             --nproc_per_node=2 \

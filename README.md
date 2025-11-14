@@ -27,3 +27,18 @@ grouped_gemm:
 ```bash
 pip install git+https://github.com/tgale96/grouped_gemm@main
 ```
+
+```bash
+git clone git@github.com:perplexityai/pplx-kernels.git && cd pplx-kernels && git checkout 12cecfda252e4e646417ac263d96e994d476ee5d
+git clone git@github.com:pbelevich/DeepEP.git && cd DeepEP && git checkout 27e8e661857499068275dbaa09e4c15d67d51f81
+```
+
+## Docker
+
+```bash
+docker build --progress=plain -f ./ep.Dockerfile -t ep .
+```
+
+```bash
+enroot import -o ./ep.sqsh dockerd://ep:latest
+```
