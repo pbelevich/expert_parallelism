@@ -197,10 +197,12 @@ RUN cd /DeepEP \
 
 ################################################################################
 
-RUN pip install megablocks
-RUN pip install git+https://github.com/tgale96/grouped_gemm@main
+RUN pip install --no-deps megablocks
+RUN pip install --no-deps git+https://github.com/tgale96/grouped_gemm@main
 
 ################################################################################
+
+RUN pip install transformers stanford-stk>=0.0.6
 
 COPY . /workspace
 

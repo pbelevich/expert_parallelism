@@ -1,6 +1,6 @@
 *.out
 __pycache__
 *.sqsh
-nvshmem
-pplx-kernels
-DeepEP
+# nvshmem
+# pplx-kernels
+# DeepEP

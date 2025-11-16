@@ -15,21 +15,23 @@ def run(rank, local_rank, world_size, args):
     outputs = model(input_ids=input_ids, labels=input_ids)
     assert_logits_are_the_same(outputs.logits, world_size, rank)
     assert_loss_are_the_same(outputs.loss, world_size, rank)
-    outputs.loss.backward()
-    assert_gradients_are_the_same(model, world_size, rank)
+    if args.impl != "pplx":
+        outputs.loss.backward()
+        assert_gradients_are_the_same(model, world_size, rank)
 
     ep_outputs = ep_model(input_ids=input_ids, labels=input_ids)
     assert_logits_are_the_same(ep_outputs.logits, world_size, rank)
     assert_loss_are_the_same(ep_outputs.loss, world_size, rank)
-    ep_outputs.loss.backward()
-    assert_gradients_are_the_same(ep_model, world_size, rank)
+    if args.impl != "pplx":
+        ep_outputs.loss.backward()
+        assert_gradients_are_the_same(ep_model, world_size, rank)
 
     torch.testing.assert_close(outputs.logits, ep_outputs.logits, atol=ep_model.grad_atol, rtol=ep_model.grad_rtol)
     torch.testing.assert_close(outputs.loss, ep_outputs.loss, atol=ep_model.grad_atol, rtol=ep_model.grad_rtol)
 
 
 def main(args):
-    dist.init_process_group(backend="nccl")
+    dist.init_process_group(backend="cpu:gloo,cuda:nccl")
     try:
         world_size = dist.get_world_size()
         rank = dist.get_rank()
@@ -51,7 +53,7 @@ SUPPORTED_MODELS = [
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name", type=str, default="mistralai/Mixtral-8x7B-Instruct-v0.1", choices=SUPPORTED_MODELS)
-    parser.add_argument("--impl", type=str, default="mega_blocks", choices=["mega_blocks", "my"])
+    parser.add_argument("--impl", type=str, default="mega_blocks", choices=["mega_blocks", "my", "pplx"])
     return parser.parse_args()
 
 if __name__ == "__main__":

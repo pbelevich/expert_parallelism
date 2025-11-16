@@ -8,6 +8,7 @@ from typing import Tuple
 import torch.distributed as dist
 import torch.nn.functional as F
 from ep import dispatch, combine
+from pplx import PPLXAllToAll
 
 class MixtralRouter(nn.Module):
     """Custom router that matches Mixtral's float32 softmax behavior"""
@@ -141,7 +142,6 @@ class MixtralSparseMoeBlockEP(nn.Module):
                 self.experts[i].w3.weight.copy_(module.experts[self.ep_rank * self.num_experts_per_rank + i].w3.weight.clone().detach())
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """ """
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         if self.training and self.jitter_noise > 0:
             hidden_states *= torch.empty_like(hidden_states).uniform_(1.0 - self.jitter_noise, 1.0 + self.jitter_noise)
@@ -181,4 +181,261 @@ class MixtralSparseMoeBlockEP(nn.Module):
         #################################################################################
 
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+        return final_hidden_states, router_logits
+
+
+# class MixtralSparseMoeBlockPPLX(nn.Module):
+
+#     def __init__(self, config: MixtralConfig, ep_group: dist.ProcessGroup, use_internode: bool = False, max_num_tokens: int = 4096):
+#         super().__init__()
+#         self.hidden_dim = config.hidden_size
+#         self.ffn_dim = config.intermediate_size
+#         self.num_experts = config.num_local_experts
+#         self.top_k = config.num_experts_per_tok
+
+#         self.ep_group = ep_group
+#         self.ep_rank = dist.get_rank(self.ep_group)
+#         self.ep_size = dist.get_world_size(self.ep_group)
+#         assert config.num_local_experts % self.ep_size == 0, "Number of experts must be divisible by the number of expert parallel groups"
+#         self.num_experts_per_rank = config.num_local_experts // self.ep_size
+
+#         self.max_num_tokens = max_num_tokens
+
+#         # gating
+#         self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
+#         def all_reduce_gate_grad(grad, group=self.ep_group):
+#             if grad is not None:
+#                 dist.all_reduce(grad, group=group)
+#             return grad
+#         self.gate.weight.register_hook(all_reduce_gate_grad)
+        
+#         self.experts = nn.ModuleList([MixtralBlockSparseTop2MLP(config) for _ in range(self.num_experts_per_rank)])
+
+#         # Jitter parameters
+#         self.jitter_noise = config.router_jitter_noise
+        
+#         # Get dtype size in bytes
+#         dtype_size = torch.bfloat16 if hasattr(config, 'torch_dtype') and config.torch_dtype == torch.bfloat16 else torch.float16
+#         hidden_dim_bytes = self.hidden_dim * dtype_size.itemsize if hasattr(dtype_size, 'itemsize') else self.hidden_dim * 2  # 2 bytes for fp16/bf16
+        
+#         if use_internode:
+#             self.all_to_all = AllToAll.internode(
+#                 max_num_tokens=max_num_tokens,
+#                 num_experts=self.num_experts,
+#                 experts_per_token=self.top_k,
+#                 rank=self.ep_rank,
+#                 world_size=self.ep_size,
+#                 dp_size=1,
+#                 hidden_dim=self.hidden_dim,
+#                 hidden_dim_bytes=hidden_dim_bytes,
+#                 hidden_dim_scale_bytes=0,
+#                 group_name=self.ep_group.group_name,
+#             )
+#         else:
+#             self.all_to_all = AllToAll.intranode(
+#                 max_num_tokens=max_num_tokens,
+#                 num_experts=self.num_experts,
+#                 experts_per_token=self.top_k,
+#                 rank=self.ep_rank,
+#                 world_size=self.ep_size,
+#                 dp_size=1,
+#                 hidden_dim=self.hidden_dim,
+#                 hidden_dim_bytes=hidden_dim_bytes,
+#                 hidden_dim_scale_bytes=0,
+#                 group_name=self.ep_group.group_name,
+#             )
+
+#     def copy_weights_from(self, module: MixtralSparseMoeBlock):
+#         with torch.no_grad():
+#             self.gate.weight.copy_(module.gate.weight.clone().detach())
+#             if module.gate.bias is not None:
+#                 self.gate.bias.copy_(module.gate.bias.clone().detach())
+
+#             for i in range(self.num_experts_per_rank):
+#                 self.experts[i].w1.weight.copy_(module.experts[self.ep_rank * self.num_experts_per_rank + i].w1.weight.clone().detach())
+#                 self.experts[i].w2.weight.copy_(module.experts[self.ep_rank * self.num_experts_per_rank + i].w2.weight.clone().detach())
+#                 self.experts[i].w3.weight.copy_(module.experts[self.ep_rank * self.num_experts_per_rank + i].w3.weight.clone().detach())
+
+#     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+#         batch_size, sequence_length, hidden_dim = hidden_states.shape
+#         if self.training and self.jitter_noise > 0:
+#             hidden_states *= torch.empty_like(hidden_states).uniform_(1.0 - self.jitter_noise, 1.0 + self.jitter_noise)
+#         hidden_states = hidden_states.view(-1, hidden_dim)
+#         # router_logits: (batch * sequence_length, n_experts)
+#         router_logits = self.gate(hidden_states)
+
+#         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+#         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+#         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+#         # we cast back to the input dtype
+#         # routing_weights = routing_weights.to(hidden_states.dtype)
+
+#         #################################################################################
+
+#         num_tokens = batch_size * sequence_length
+        
+#         # Prepare buffers for dispatch
+#         expert_num_tokens = torch.empty(
+#             self.num_experts_per_rank,
+#             dtype=torch.int32,
+#             device=hidden_states.device,
+#         )
+        
+#         # Use max_num_tokens to match pplx-kernels expectations
+#         expert_x = torch.zeros(  # Change empty to zeros!
+#             (self.num_experts_per_rank, self.max_num_tokens, self.hidden_dim),
+#             dtype=hidden_states.dtype,
+#             device=hidden_states.device,
+#         )
+        
+#         bound_m = torch.tensor([num_tokens], dtype=torch.uint32, device=hidden_states.device)
+        
+#         # Get current CUDA stream
+#         current_stream = torch.cuda.current_stream(hidden_states.device)
+
+#         # Dispatch tokens to experts using pplx-kernels
+#         self.all_to_all.dispatch(
+#             out_expert_num_tokens=expert_num_tokens,
+#             out_expert_x=expert_x,
+#             out_expert_x_scale=None,
+#             dp_x=hidden_states,
+#             dp_x_scale=None,
+#             indices=selected_experts.to(torch.uint32),
+#             bound_m=bound_m,
+#         )
+
+#         # CRITICAL: Synchronize the current stream
+#         current_stream.synchronize()
+        
+#         # CRITICAL FIX: Use zeros_like instead of empty_like to avoid NaNs from uninitialized memory
+#         expert_y = torch.zeros_like(expert_x)
+        
+#         for local_expert_idx in range(self.num_experts_per_rank):
+#             num_expert_tokens = expert_num_tokens[local_expert_idx].item()
+#             if num_expert_tokens > 0:
+#                 expert_input = expert_x[local_expert_idx, :num_expert_tokens, :]
+#                 expert_output = self.experts[local_expert_idx](expert_input)
+#                 expert_y[local_expert_idx, :num_expert_tokens, :] = expert_output
+#                 # Rest is already zeros from zeros_like
+        
+#         # Output buffer must be sized to max_num_tokens
+#         final_hidden_states = torch.zeros(
+#             (self.max_num_tokens, self.hidden_dim),
+#             dtype=hidden_states.dtype,
+#             device=hidden_states.device,
+#         )
+        
+#         self.all_to_all.combine(
+#             out_tokens=final_hidden_states,
+#             indices=selected_experts.to(torch.uint32),
+#             weights=routing_weights,
+#             expert_y=expert_y,
+#             bound_m=bound_m,
+#         )
+
+#         current_stream.synchronize()
+
+#         #################################################################################
+        
+#         # Extract only the actual tokens and reshape back to original shape
+#         final_hidden_states = final_hidden_states[:num_tokens].reshape(batch_size, sequence_length, hidden_dim)
+        
+#         return final_hidden_states, router_logits
+
+class MixtralSparseMoeBlockPPLX(nn.Module):
+
+    def __init__(self, config: MixtralConfig, ep_group: dist.ProcessGroup, use_internode: bool = False, max_num_tokens: int = 4096):
+        super().__init__()
+        self.hidden_dim = config.hidden_size
+        self.ffn_dim = config.intermediate_size
+        self.num_experts = config.num_local_experts
+        self.top_k = config.num_experts_per_tok
+
+        self.ep_group = ep_group
+        self.ep_rank = dist.get_rank(self.ep_group)
+        self.ep_size = dist.get_world_size(self.ep_group)
+        assert config.num_local_experts % self.ep_size == 0, "Number of experts must be divisible by the number of expert parallel groups"
+        self.num_experts_per_rank = config.num_local_experts // self.ep_size
+
+        self.max_num_tokens = max_num_tokens
+
+        # gating
+        self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
+        def all_reduce_gate_grad(grad, group=self.ep_group):
+            if grad is not None:
+                dist.all_reduce(grad, group=group)
+            return grad
+        self.gate.weight.register_hook(all_reduce_gate_grad)
+        
+        self.experts = nn.ModuleList([MixtralBlockSparseTop2MLP(config) for _ in range(self.num_experts_per_rank)])
+
+        # Jitter parameters
+        self.jitter_noise = config.router_jitter_noise
+        
+        # Get dtype size in bytes
+        dtype_size = torch.bfloat16 if hasattr(config, 'torch_dtype') and config.torch_dtype == torch.bfloat16 else torch.float16
+        hidden_dim_bytes = self.hidden_dim * dtype_size.itemsize if hasattr(dtype_size, 'itemsize') else self.hidden_dim * 2  # 2 bytes for fp16/bf16
+        
+        self.all_to_all = PPLXAllToAll(self.ep_group, self.num_experts, self.top_k, self.hidden_dim, hidden_dim_bytes, self.max_num_tokens, False)
+
+    def copy_weights_from(self, module: MixtralSparseMoeBlock):
+        with torch.no_grad():
+            self.gate.weight.copy_(module.gate.weight.clone().detach())
+            if module.gate.bias is not None:
+                self.gate.bias.copy_(module.gate.bias.clone().detach())
+
+            for i in range(self.num_experts_per_rank):
+                self.experts[i].w1.weight.copy_(module.experts[self.ep_rank * self.num_experts_per_rank + i].w1.weight.clone().detach())
+                self.experts[i].w2.weight.copy_(module.experts[self.ep_rank * self.num_experts_per_rank + i].w2.weight.clone().detach())
+                self.experts[i].w3.weight.copy_(module.experts[self.ep_rank * self.num_experts_per_rank + i].w3.weight.clone().detach())
+
+    def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        if self.training and self.jitter_noise > 0:
+            hidden_states *= torch.empty_like(hidden_states).uniform_(1.0 - self.jitter_noise, 1.0 + self.jitter_noise)
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        # router_logits: (batch * sequence_length, n_experts)
+        router_logits = self.gate(hidden_states)
+
+        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        # we cast back to the input dtype
+        # routing_weights = routing_weights.to(hidden_states.dtype)
+
+        #################################################################################
+
+        num_tokens = batch_size * sequence_length
+        num_tokens_tensor = torch.tensor([num_tokens], dtype=torch.uint32, device=hidden_states.device)
+
+        current_stream = torch.cuda.current_stream(hidden_states.device)
+
+        hidden_states_received, received_tpe = self.all_to_all.dispatch(hidden_states, selected_experts, num_tokens_tensor)
+
+        current_stream.synchronize()
+        
+        hidden_states_to_send = torch.zeros_like(hidden_states_received)
+        
+        for local_expert_idx in range(self.num_experts_per_rank):
+            num_expert_tokens = received_tpe[local_expert_idx].item()
+            if num_expert_tokens > 0:
+                expert_input = hidden_states_received[local_expert_idx, :num_expert_tokens, :]
+                expert_output = self.experts[local_expert_idx](expert_input)
+                hidden_states_to_send[local_expert_idx, :num_expert_tokens, :] = expert_output
+                # Rest is already zeros from zeros_like
+        
+        # Output buffer must be sized to max_num_tokens
+        final_hidden_states = torch.zeros(
+            (self.max_num_tokens, self.hidden_dim),
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        
+        self.all_to_all.combine(final_hidden_states, hidden_states_to_send, selected_experts.to(torch.uint32), routing_weights, num_tokens_tensor)
+
+        current_stream.synchronize()
+
+        #################################################################################
+        
+        final_hidden_states = final_hidden_states[:num_tokens].reshape(batch_size, sequence_length, hidden_dim)
         return final_hidden_states, router_logits

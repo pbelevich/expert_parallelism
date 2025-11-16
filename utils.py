@@ -85,6 +85,12 @@ def apply_expert_parallelism(model, ep_group, impl="mega_blocks"):
             model.grad_atol = 1e-6
             model.grad_rtol = 1e-6
             model.except_patterns = [".experts"]
+        elif impl == "pplx":
+            from mixtral import MixtralSparseMoeBlockPPLX
+            model = replace_module(model, MixtralSparseMoeBlock, MixtralSparseMoeBlockPPLX, model.config, model.device, model.dtype, ep_group)
+            model.grad_atol = 1e-2
+            model.grad_rtol = 1e-2
+            model.except_patterns = [".experts"]
         return model
     elif isinstance(model, Qwen3MoeForCausalLM):
         from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeSparseMoeBlock
