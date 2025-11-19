@@ -2,30 +2,51 @@ import argparse
 import copy
 import torch
 import torch.distributed as dist
+from my_ddp import DataParallelNaive
 from transformers import AutoModelForCausalLM
 from utils import *
 
 def run(rank, local_rank, world_size, args):
     print(f"Hello from rank {rank:02d} of {world_size:02d} on device {local_rank:02d}")
     config = create_config(args.model_name)
+    ep_group = dist.group.WORLD
+    
     model = sync_model_parameters(AutoModelForCausalLM.from_config(config).to('cuda'))
-    ep_model = apply_expert_parallelism(copy.deepcopy(model), dist.group.WORLD, args.impl)
+    ep_model = copy.deepcopy(model)
+    model = DataParallelNaive(model, process_group=dist.group.WORLD)
+    ep_model = DataParallelNaive(ep_model, process_group=dist.group.WORLD, except_names=["experts"])
+    ep_model, grad_atol, grad_rtol, except_patterns, assert_gradients_are_all_the_same = apply_expert_parallelism(ep_model, dist.group.WORLD, args.impl)
 
     input_ids = sync_batch(create_batch(config))
-    outputs = model(input_ids=input_ids, labels=input_ids)
-    assert_logits_are_the_same(outputs.logits, world_size, rank)
-    assert_loss_are_the_same(outputs.loss, world_size, rank)
+    outputs = model(input_ids=input_ids, labels=input_ids, output_hidden_states=True)
+    assert_the_same_across_ranks(outputs.logits, world_size, rank)
+    assert_the_same_across_ranks(outputs.loss, world_size, rank)
     outputs.loss.backward()
-    assert_gradients_are_the_same(model, world_size, rank)
+    assert_gradients_are_the_same_across_ranks(model, world_size, rank)
 
-    ep_outputs = ep_model(input_ids=input_ids, labels=input_ids)
-    assert_logits_are_the_same(ep_outputs.logits, world_size, rank)
-    assert_loss_are_the_same(ep_outputs.loss, world_size, rank)
+    ep_outputs = ep_model(input_ids=input_ids, labels=input_ids, output_hidden_states=True)
+    assert_the_same_across_ranks(ep_outputs.logits, world_size, rank)
+    assert_the_same_across_ranks(ep_outputs.loss, world_size, rank)
     ep_outputs.loss.backward()
-    assert_gradients_are_the_same(ep_model, world_size, rank)
+    assert_gradients_are_the_same_across_ranks(ep_model, world_size, rank, except_patterns=except_patterns)
 
-    torch.testing.assert_close(outputs.logits, ep_outputs.logits, atol=ep_model.grad_atol, rtol=ep_model.grad_rtol)
-    torch.testing.assert_close(outputs.loss, ep_outputs.loss, atol=ep_model.grad_atol, rtol=ep_model.grad_rtol)
+    assert_outputs_are_all_the_same(outputs, ep_outputs, rank, atol=grad_atol, rtol=grad_rtol)
+
+    # DP -> EP -> DP test
+    model = sync_model_parameters(AutoModelForCausalLM.from_config(config).to('cuda'))
+    ep_model = copy.deepcopy(model)
+    model = DataParallelNaive(model, process_group=dist.group.WORLD)
+    ep_model = DataParallelNaive(ep_model, process_group=dist.group.WORLD, except_names=["experts"])
+    ep_model, grad_atol, grad_rtol, except_patterns, assert_gradients_are_all_the_same = apply_expert_parallelism(ep_model, dist.group.WORLD, args.impl)
+
+    input_ids = create_batch(config)
+    assert_all_different_across_ranks(input_ids, world_size, rank)
+    outputs = model(input_ids=input_ids, labels=input_ids, output_hidden_states=True)
+    ep_outputs = ep_model(input_ids=input_ids, labels=input_ids, output_hidden_states=True)
+    assert_outputs_are_all_the_same(outputs, ep_outputs, rank)
+    outputs.loss.backward()
+    ep_outputs.loss.backward()
+    assert_gradients_are_all_the_same(model, ep_model, ep_group, rank)
 
 
 def main(args):
